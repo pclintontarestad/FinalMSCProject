@@ -601,6 +601,62 @@ def compute_full_cycle_fidelity(alpha_plus: complex = 1.0, alpha_minus: complex 
     return fidelity, psi_out
 
 
+def check_unitarity(res) -> None:
+    """
+    Warn if mesolve evolution drifts away from unit norm.
+
+    This is useful when experimenting with modified retrieval Hamiltonians or
+    extended gate windows; it leaves the evolution unchanged and only reports
+    if norms stray outside a tight tolerance.
+    """
+
+    norms = [state.norm() for state in res.states]
+    if not norms:
+        return
+
+    min_norm, max_norm = min(norms), max(norms)
+    if abs(min_norm - 1.0) > 1e-6 or abs(max_norm - 1.0) > 1e-6:
+        print(
+            f"WARNING: Non-unitary drift detected (min={min_norm:.6f}, max={max_norm:.6f})"
+        )
+
+
+def plot_full_cycle_diagnostics(alpha_plus: complex = 1.0, alpha_minus: complex = 0.0) -> None:
+    """
+    Visualise photon absorption/emission and ground-state population across write → gate → read.
+
+    This concatenates all three phases so any discontinuities at window boundaries become
+    visible. The write/gate/read regions are shaded for clarity; evolution itself is unchanged.
+    """
+
+    res_write, res_gate, res_read = run_three_phase_sequence(alpha_plus, alpha_minus)
+
+    all_states = res_write.states + res_gate.states + res_read.states
+    all_times = np.concatenate((tlist, tlist_gate, tlist_read))
+
+    n_plus = [expect(N_plus_full, s) for s in all_states]
+    n_minus = [expect(N_minus_full, s) for s in all_states]
+    pop_ground = [expect(P_gm1_full + P_g0_full + P_gp1_full, s) for s in all_states]
+
+    t_us = all_times / Gamma_e * 1e6
+
+    plt.figure(figsize=(12, 5))
+    plt.axvspan(T_START / Gamma_e * 1e6, T_END / Gamma_e * 1e6, alpha=0.15, color="tab:blue", label="Write")
+    plt.axvspan(T_GATE_START / Gamma_e * 1e6, T_GATE_END / Gamma_e * 1e6, alpha=0.15, color="tab:gray", label="Gate")
+    plt.axvspan(T_READ_START / Gamma_e * 1e6, T_READ_END / Gamma_e * 1e6, alpha=0.15, color="tab:green", label="Read")
+
+    plt.plot(t_us, n_plus, "r-", label="⟨n₊⟩")
+    plt.plot(t_us, n_minus, "m-", label="⟨n₋⟩")
+    plt.plot(t_us, pop_ground, "k-", label="P_ground")
+
+    plt.xlabel("Time (µs)")
+    plt.ylabel("Population / photon number")
+    plt.title("Full-cycle photon and ground-state diagnostics")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.show()
+
+
 # ------------------------------------------------------------------
 # 9. SU(3) utility functions (BARE BASIS)
 # ------------------------------------------------------------------
