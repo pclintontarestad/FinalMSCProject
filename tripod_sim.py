@@ -9,10 +9,8 @@ Hamiltonian construction, encoder calculation, SU(3) diagnostics, and simple
 scan helpers.  Plotting routines remain available for quick checks.
 """
 
-from dataclasses import dataclass, field
-
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
 from qutip import (
     Options,
     Qobj,
@@ -25,8 +23,6 @@ from qutip import (
     qeye,
     tensor,
 )
-
-EPS = np.finfo(float).eps
 
 # ------------------------------------------------------------------
 # 1. Physical parameters (Rb-87 D2, TQM-SIM-V2 style)
@@ -44,65 +40,20 @@ Omega_P_phys = 2 * np.pi * 0.3e6  # "typical" probe scale (used to set coupling 
 sigma_phys = 0.5e-6  # Gaussian sigma
 T_total_phys = 5.0e-6  # write window
 
-# Ground two-photon detunings (Hz) – start with zero
-delta_m_phys = np.array([0.0, 0.0, 0.0])  # [delta_-1, delta_0, delta_+1]
-
-
-@dataclass
-class SweepParameters:
-    """Container for parameters we may sweep without altering defaults."""
-
-    clebsch_sigma_plus: float = 1.0
-    clebsch_sigma_minus: float = 1.0
-    delta_one_photon: float = Delta_phys
-    delta_two_photon: np.ndarray = field(
-        default_factory=lambda: delta_m_phys.copy()
-    )
-    zeeman_shifts: np.ndarray = field(default_factory=lambda: np.zeros(3))
-    adiabaticity: float = Omega_C_phys * sigma_phys  # pulse area proxy
-    omega_control: float = Omega_C_phys
-    omega_probe: float = Omega_P_phys
-
-    def dimensionless_one_photon(self) -> float:
-        return self.delta_one_photon / Gamma_e
-
-    def dimensionless_two_photon(self) -> np.ndarray:
-        return (self.delta_two_photon + self.zeeman_shifts) / Gamma_e
-
-    def dimensionless_omega_control(self) -> float:
-        return self.omega_control / Gamma_e
-
-    def dimensionless_omega_probe(self) -> float:
-        return self.omega_probe / Gamma_e
-
-
-# Default sweep parameters mirror the original fixed configuration
-sweep_params = SweepParameters()
-
 # Dimensionless units: t_sim = t_phys * Gamma_e; Omega_sim = Omega_phys / Gamma_e
 Gamma = 1.0
-Delta = sweep_params.dimensionless_one_photon()
-Omega_c0 = sweep_params.dimensionless_omega_control()  # peak control Rabi frequency in simulation units
+Delta = Delta_phys / Gamma_e
+Omega_c0 = Omega_C_phys / Gamma_e  # peak control Rabi frequency in simulation units
 
 # Single-photon couplings in units of Gamma_e
-g_plus = sweep_params.clebsch_sigma_plus * sweep_params.dimensionless_omega_probe()
-g_minus = sweep_params.clebsch_sigma_minus * sweep_params.dimensionless_omega_probe()
+g_plus = Omega_P_phys / Gamma_e
+g_minus = Omega_P_phys / Gamma_e
 
 # Time grid (dimensionless)
 T_START = 0.0
 T_END = T_total_phys * Gamma_e
 N_STEPS = 1001
 tlist = np.linspace(T_START, T_END, N_STEPS)  # evenly spaced for mesolve
-
-# Gate and read windows reuse the same duration as the write phase so that we can
-# propagate through write → gate → read with equal time steps for each segment.
-T_GATE_START = T_END
-T_GATE_END = 2 * T_END
-T_READ_START = T_GATE_END
-T_READ_END = 3 * T_END
-
-tlist_gate = np.linspace(T_GATE_START, T_GATE_END, N_STEPS)
-tlist_read = np.linspace(T_READ_START, T_READ_END, N_STEPS)
 
 # Pulse centres (dimensionless; counter-intuitive sequence)
 t_c_phys = 2.0e-6  # control pulse centre
@@ -112,7 +63,9 @@ t_p = t_p_phys * Gamma_e
 tau_c = sigma_phys * Gamma_e
 tau_p = sigma_phys * Gamma_e  # identical widths simplify symmetry checks
 
-delta_m = sweep_params.dimensionless_two_photon()
+# Ground two-photon detunings (dimensionless) – start with zero
+delta_m_phys = np.array([0.0, 0.0, 0.0])  # [delta_-1, delta_0, delta_+1] in Hz
+delta_m = delta_m_phys / Gamma_e
 
 
 # ------------------------------------------------------------------
@@ -142,7 +95,7 @@ def mixing_angle(t: float) -> float:
     Oc = Omega_c(t)
     Op = Omega_p_eff(t)
     denom = np.sqrt(np.abs(Oc) ** 2 + np.abs(Op) ** 2)
-    if denom < np.sqrt(EPS):
+    if denom < 1e-12:
         return 0.0
     return np.arctan(np.abs(Op) / np.abs(Oc))
 
@@ -227,9 +180,6 @@ def H_tripod_t(t: float, args: dict) -> Qobj:
     """
 
     delta = args.get("delta_m", delta_m)  # allow runtime detuning sweeps
-    g_plus_runtime = args.get("g_plus", g_plus)
-    g_minus_runtime = args.get("g_minus", g_minus)
-    omega_c_func = args.get("Omega_c_func", Omega_c)
 
     # Diagonal detunings: excited-state offset plus optional ground offsets
     H = (-Delta) * P_e_full
@@ -237,14 +187,14 @@ def H_tripod_t(t: float, args: dict) -> Qobj:
     H += delta[1] * P_g0_full
     H += delta[2] * P_gp1_full
 
-    # σ+ coupling: |g_{+1};1_+> ↔ |e;0_+> (Δm = +1)
-    H += g_plus_runtime * (a_plus * sig_egp1.dag() + a_plus.dag() * sig_egp1)
+    # σ+ coupling: |g_-1;1_+> ↔ |e;0_+>
+    H += g_minus * (a_plus * sig_egm1.dag() + a_plus.dag() * sig_egm1)
 
-    # σ- coupling: |g_{-1};1_-> ↔ |e;0_-> (Δm = -1)
-    H += g_minus_runtime * (a_minus * sig_egm1.dag() + a_minus.dag() * sig_egm1)
+    # σ- coupling: |g_+1;1_-> ↔ |e;0_->
+    H += g_plus * (a_minus * sig_egp1.dag() + a_minus.dag() * sig_egp1)
 
     # Control field coupling (classical) |g_0> ↔ |e>
-    Oc = omega_c_func(t)
+    Oc = Omega_c(t)
     H += Oc * sig_eg0 + np.conj(Oc) * sig_eg0.dag()
 
     return H
@@ -270,13 +220,6 @@ psi_atom0 = ket_g0
 # Full initial states
 psi_in_sigma_plus = tensor(psi_atom0, ket_1_plus, ket_0_minus)
 psi_in_sigma_minus = tensor(psi_atom0, ket_0_plus, ket_1_minus)
-
-# Convenient vacuum references for leakage checks and amplitude extraction
-ket_vacuum_photons = tensor(ket_0_plus, ket_0_minus)
-ket_gm1_vacuum = tensor(ket_gm1, ket_0_plus, ket_0_minus)
-ket_g0_vacuum = tensor(ket_g0, ket_0_plus, ket_0_minus)
-ket_gp1_vacuum = tensor(ket_gp1, ket_0_plus, ket_0_minus)
-P_vacuum_photons = tensor(qeye(4), ket_0_plus * ket_0_plus.dag(), ket_0_minus * ket_0_minus.dag())
 
 
 # ------------------------------------------------------------------
@@ -315,23 +258,15 @@ def evolve_and_extract(alpha_plus: complex, alpha_minus: complex, do_log: bool =
 
     psi_T = res.states[-1]  # final state after the write window
 
-    # Track residual photons to flag incomplete absorption during encoding
-    remaining_plus = expect(N_plus_full, psi_T)
-    remaining_minus = expect(N_minus_full, psi_T)
-    if do_log:
-        print(
-            f"Residual photons after write: n_plus={remaining_plus:.3e}, n_minus={remaining_minus:.3e}"
-        )
-
     if do_log:
         rho_full = ket2dm(psi_T)
         pop_e_final = (P_e_full * rho_full).tr().real
         print(f"Final excited-state population: {pop_e_final:.3e}")
 
-    # Project amplitudes onto vacuum-photon ground states to avoid mixing with leftover light
-    amp_gm1 = (ket_gm1_vacuum.dag() * psi_T)[0, 0]
-    amp_g0 = (ket_g0_vacuum.dag() * psi_T)[0, 0]
-    amp_gp1 = (ket_gp1_vacuum.dag() * psi_T)[0, 0]
+    # Project amplitudes onto the ground subspace while preserving phases
+    amp_gm1 = (tensor(ket_gm1.dag(), qeye(N_ph), qeye(N_ph)) * psi_T).full()[0, 0]
+    amp_g0 = (tensor(ket_g0.dag(), qeye(N_ph), qeye(N_ph)) * psi_T).full()[0, 0]
+    amp_gp1 = (tensor(ket_gp1.dag(), qeye(N_ph), qeye(N_ph)) * psi_T).full()[0, 0]
 
     return np.array([amp_gm1, amp_g0, amp_gp1], dtype=complex)
 
@@ -355,9 +290,7 @@ def build_encoder():
     G_phys = E_phys.conj().T @ E_phys  # overlap/efficiency matrix
     eigvals_G_phys = np.linalg.eigvalsh(G_phys)
 
-    eta_plus = np.linalg.norm(c_sigma_plus) ** 2
-    eta_minus = np.linalg.norm(c_sigma_minus) ** 2
-    eta = 0.5 * (eta_plus + eta_minus)  # average storage efficiency over σ± inputs
+    eta = 0.5 * np.trace(G_phys).real  # average storage efficiency over σ± inputs
 
     if eta > 1e-12:
         scale = np.sqrt(eta)
@@ -387,19 +320,6 @@ def build_encoder():
     print(eigvals_G_iso)
 
     return E_phys, E_iso, eta, G_phys, G_iso, eigvals_G_phys, eigvals_G_iso
-
-
-def build_decoder(E_phys: np.ndarray, pseudo_inverse: bool = True) -> np.ndarray:
-    """
-    Construct a decoder that maps stored ground-state amplitudes back to the
-    photonic basis. When `pseudo_inverse` is True, a Moore–Penrose inverse is
-    used to remain well defined even if the encoder is not perfectly isometric;
-    otherwise the simple Hermitian transpose is returned.
-    """
-
-    if pseudo_inverse:
-        return np.linalg.pinv(E_phys)
-    return E_phys.conj().T
 
 
 # ------------------------------------------------------------------
@@ -482,106 +402,7 @@ def plot_eit_and_populations(alpha_plus: complex = 1.0, alpha_minus: complex = 0
 
 
 # ------------------------------------------------------------------
-# 8. Three-period EIT cycle: write, gate, read
-# ------------------------------------------------------------------
-
-def Omega_c_gate(_t: float) -> complex:
-    """Control field is off during the gate phase."""
-
-    return 0.0
-
-
-def Omega_c_read(t: float) -> complex:
-    """
-    Time-reversed control pulse for the read phase to emulate retrieval.
-
-    The read window runs from T_READ_START to T_READ_END; mapping t →
-    (T_READ_END - t) mirrors the write pulse so that the counter-intuitive
-    sequence is replayed in reverse.
-    """
-
-    mirrored_t = T_READ_END - t
-    return Omega_c(mirrored_t)
-
-
-def run_gate_phase(psi_in: Qobj):
-    """Propagate through the gate window with lasers off to track leakage."""
-
-    return mesolve(
-        H_tripod_t,
-        psi_in,
-        tlist_gate,
-        c_ops=[],
-        e_ops=[],
-        args={
-            "delta_m": delta_m,
-            "Omega_c_func": Omega_c_gate,
-            "g_plus": 0.0,
-            "g_minus": 0.0,
-        },
-    )
-
-
-def run_read_phase(psi_in: Qobj):
-    """Propagate through the read window with the control pulse reversed."""
-
-    return mesolve(
-        H_tripod_t,
-        psi_in,
-        tlist_read,
-        c_ops=[],
-        e_ops=[],
-        args={"delta_m": delta_m, "Omega_c_func": Omega_c_read},
-    )
-
-
-def run_three_phase_sequence(alpha_plus: complex = 1.0, alpha_minus: complex = 0.0):
-    """
-    Execute write → gate → read in sequence.
-
-    The write phase reuses the existing EIT trajectory; the gate phase holds
-    the system with lasers off; the read phase mirrors the write pulse.
-    Returns the three mesolve result objects so that diagnostics can still be
-    performed at the end of the write window while also exposing the final
-    state for fidelity checks.
-    """
-
-    res_write = run_trajectory(alpha_plus, alpha_minus)
-    psi_after_write = res_write.states[-1]
-
-    res_gate = run_gate_phase(psi_after_write)
-    psi_after_gate = res_gate.states[-1]
-
-    res_read = run_read_phase(psi_after_gate)
-
-    return res_write, res_gate, res_read
-
-
-def compute_full_cycle_fidelity(alpha_plus: complex = 1.0, alpha_minus: complex = 0.0):
-    """
-    Calculate |⟨ψ_in|ψ_out⟩|^2 after write → gate → read to monitor retrieval.
-
-    Fidelity is evaluated against the original photonic input state and can be
-    used as a regression check while we extend the model.
-    """
-
-    norm = np.sqrt(abs(alpha_plus) ** 2 + abs(alpha_minus) ** 2)
-    if norm < 1e-12:
-        raise ValueError("Input photonic state has zero norm.")
-
-    ap = alpha_plus / norm
-    am = alpha_minus / norm
-    psi_in = ap * psi_in_sigma_plus + am * psi_in_sigma_minus
-
-    _, _, res_read = run_three_phase_sequence(alpha_plus, alpha_minus)
-    psi_out = res_read.states[-1]
-
-    fidelity = abs((psi_in.dag() * psi_out)[0, 0]) ** 2
-    return fidelity, psi_out
-
-
-# ------------------------------------------------------------------
-# 9. SU(3) utility functions (BARE BASIS)
+# 8. SU(3) utility functions (BARE BASIS)
 # ------------------------------------------------------------------
 
 def su3_generators_bare_3x3():
@@ -599,7 +420,7 @@ def su3_generators_bare_3x3():
 
 
 # ------------------------------------------------------------------
-# 10. SU(3) Basis Adaptation: Dark Space & Leakage
+# 9. SU(3) Basis Adaptation: Dark Space & Leakage
 # ------------------------------------------------------------------
 
 def get_dark_basis_unitary(E_phys: np.ndarray) -> np.ndarray:
@@ -608,16 +429,8 @@ def get_dark_basis_unitary(E_phys: np.ndarray) -> np.ndarray:
     to the Dark/Bright basis determined by the physical encoder.
     """
 
-    rank = np.linalg.matrix_rank(E_phys, tol=10 * np.sqrt(EPS))
-    if rank < 2:
-        # Use SVD to obtain a numerically stable orthonormal basis even when the
-        # encoder columns are nearly linearly dependent (low efficiency cases).
-        u, _, _ = np.linalg.svd(E_phys, full_matrices=True)
-        Q = u
-    else:
-        Q, _ = np.linalg.qr(E_phys, mode="complete")
-
-    return Q  # Columns: |D0>, |D1>, |B> via QR/SVD on the encoder columns
+    Q, _ = np.linalg.qr(E_phys, mode="complete")
+    return Q  # Columns: |D0>, |D1>, |B> via QR on the encoder columns
 
 
 def transform_and_classify_su3(U_atom: np.ndarray):
@@ -651,7 +464,7 @@ def transform_and_classify_su3(U_atom: np.ndarray):
         norm_A = np.linalg.norm(block_A)
         norm_b = np.linalg.norm(block_b)
 
-        tol = 1e3 * np.sqrt(EPS)
+        tol = 1e-6
 
         is_leakage = norm_b > tol
         is_logical = (not is_leakage) and (norm_A > tol)
@@ -802,6 +615,3 @@ if __name__ == "__main__":
     plot_su3_expectations(E_phys, alpha_plus=1.0, alpha_minus=0.0)
 
     scan_transparency_window(scan_range_mhz=20.0, n_points=51)
-
-    fidelity, _ = compute_full_cycle_fidelity(alpha_plus=1.0, alpha_minus=0.0)
-    print(f"\nFull write → gate → read fidelity for σ+: {fidelity:.6f}")
