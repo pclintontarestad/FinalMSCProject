@@ -101,7 +101,7 @@ Delta_phys = 0.0  # on-resonance EIT baseline
 
 # Control/probe Rabi frequencies (Hz)
 Omega_C_phys = 2 * np.pi * 3e6  # control Rabi frequency
-Omega_P_phys = 2 * np.pi * 0.2e6  # weak probe scale (used to set coupling g)
+Omega_P_phys = 2 * np.pi * 1.5e6  # stronger probe scale to enable storage
 
 # Pulse width and total interaction time (s)
 sigma_phys = 0.5e-6  # Gaussian sigma
@@ -241,7 +241,7 @@ def Omega_p_eff(t: float) -> complex:
     emission during readout.
     """
 
-    return 0.2 * (Omega_P_phys / Gamma_e) * np.exp(-((t - t_p) ** 2) / (2 * tau_p**2))
+    return (Omega_P_phys / Gamma_e) * np.exp(-((t - t_p) ** 2) / (2 * tau_p**2))
 
 
 def Omega_c_gate(_t: float) -> complex:
@@ -501,17 +501,13 @@ def H_tripod_t(t: float, args: dict) -> Qobj:
     g_plus_runtime = args.get("g_plus", g_plus_t)
     g_minus_runtime = args.get("g_minus", g_minus_t)
     omega_c_func = args.get("Omega_c_func", Omega_c)
-    theta_func = args.get("theta_func", mixing_angle)
 
     H = delta[0] * P_gm1_full
     H += delta[1] * P_g0_full
     H += delta[2] * P_gp1_full
 
-    theta = theta_func(t)
-    mix_factor = np.sin(theta)
-
-    gplus_t = mix_factor * evaluate_coupling(g_plus_runtime, t)
-    gminus_t = mix_factor * evaluate_coupling(g_minus_runtime, t)
+    gplus_t = evaluate_coupling(g_plus_runtime, t)
+    gminus_t = evaluate_coupling(g_minus_runtime, t)
 
     # Beamsplitter-like photon ↔ spin-wave exchange
     # a_plus * S_plus      : |g_0,1_+> → |g_-1,0_+>
@@ -519,10 +515,10 @@ def H_tripod_t(t: float, args: dict) -> Qobj:
     H += gplus_t * (a_plus * S_plus + a_plus.dag() * S_plus.dag())
     H += gminus_t * (a_minus * S_minus + a_minus.dag() * S_minus.dag())
 
-    # Control field enters via the mixing angle; retain a weak residual imprint
+    # Control field envelope is kept for completeness even though |e> is eliminated
     Oc = omega_c_func(t)
     if np.abs(Oc) > np.sqrt(EPS):
-        H += 0.0 * (Oc * P_g0_full)  # placeholder to keep coupling signature without |e>
+        H += 0.0 * (Oc * P_g0_full)  # placeholder to preserve args signature
 
     return H
 
